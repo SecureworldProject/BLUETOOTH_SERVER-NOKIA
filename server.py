@@ -6,45 +6,39 @@ import os
 #import select
 
 
+
+### GLOBAL VARIABLES ###
 server_sock = None
 client_sock = None
 server_thread = None
 is_server_running = False
 
-SIZE_OF_NAME_LENGTH = 1             # 1 Bytes for the length of the filename(and extension) in bytes (min: 1, max: 256)
-SIZE_OF_FILE_SIZE = 4               # 4 Bytes for the size of the file in bytes (min: 0, max: 4.294.967.295)
 
-MAX_CHUNK_SIZE = 64*1024            # 64 KiB. The maximum size of each chunk that will be read from the socket
+
+### CONSTANTS ###
+# Receiivng data format
+SIZE_OF_NAME_LENGTH = 1             # 1 Bytes for the length of the filename(and extension) in bytes (min: 1, max: 256)
+MAX_CHUNK_DATA_SIZE = 16*1024       # 16 KiB. The maximum size of each chunk that will be read from the socket
 MAX_FILENAME_LENGTH_ALLOWED = 150   # 150 Bytes for the name and its extension (was not set to 255)
-MAX_FILE_SIZE_ALLOWED = 42949672956 # 2^32 - 1  =  4.294.967.296 - 1  =  4.294.967.295
 
 UUID = "94f39d29-7d6d-437d-973b-fba39e49d4ee"
 
-
-# Get environment variables
-FOLDER_PATH = os.getenv('SECUREMIRROR_CAPTURES')
-
-# class ReceivingPhase(Enum):
-#   GETTING_NAME_SIZE   = 0
-#   GETTING_NAME        = 1
-#   GETTING_FILE_SIZE   = 2
-#   GETTING_DATA        = 3
-#   DONE                = 4
-# ReceivingPhase = {
-#   0: "GETTING_NAME_SIZE"
-#   1: "GETTING_NAME"
-#   2: "GETTING_FILE_SIZE"
-#   3: "GETTING_DATA"
-#   4: "DONE"
-# }
+# Receiving phases (state machine)
 PHASE_GETTING_NAME_LENGTH   = "PHASE_GETTING_NAME_LENGTH"
 PHASE_GETTING_NAME          = "PHASE_GETTING_NAME"
-PHASE_GETTING_FILE_SIZE     = "PHASE_GETTING_FILE_SIZE"
 PHASE_GETTING_DATA          = "PHASE_GETTING_DATA"
-PHASE_DONE                  = "PHASE_DONE"
+
+# Paths
+FIXED_FILENAME = "capture"
+FOLDER_PATH = os.getenv('SECUREMIRROR_CAPTURES')    # Get from environment variable
 
 
 
+
+
+### CLASSES AND FUNCTIONS ###
+
+# Class that extends Thread and allows to be stoppable from the main thread. Main thread can be used to process user actions/signals like Ctrl+C.
 class StoppableThread(threading.Thread):
     def __init__(self,  *args, **kwargs):
         super(StoppableThread, self).__init__(*args, **kwargs)
@@ -71,6 +65,7 @@ class StoppableThread(threading.Thread):
 
         if force_exit:
             exit(0)
+
 
 
 def main():
@@ -113,7 +108,7 @@ def main():
     # While the server thread is running, main thread sleeps.
     while is_server_running:
         try:
-            # Check if server is running every 5s to exit automatically
+            # Check if server is running every 2s to exit automatically
             time.sleep(2)
         except KeyboardInterrupt:
             # If Ctrl+C is pressed, tell the server to stop and exit.
@@ -123,6 +118,23 @@ def main():
             exit(0)
 
     print("Exitting...")
+
+
+
+# The server only saves the extension, the 'name' of the file is always the same, and it is defined in FIXED_FILENAME.
+# NOTE: if there is no extension, then the full received filenamme is used. Useful for testing.
+def compose_file_full_path(recv_filename):
+    extension = ""
+    extension_dot_idx = recv_filename.rfind(".")
+    if extension_dot_idx == -1:
+        extension = ""
+        filename = recv_filename
+    else:
+        extension = recv_filename[extension_dot_idx:]
+        filename = FIXED_FILENAME
+
+    return FOLDER_PATH+"/"+filename+extension
+
 
 
 def bluetooth_server_start():
@@ -144,135 +156,118 @@ def bluetooth_server_start():
                         profiles = [ SERIAL_PORT_PROFILE ], 
                         protocols = [ OBEX_UUID ] 
                         )
-                       
-    print("Waiting for connection on RFCOMM channel %d..." % port)
 
-    client_sock, client_info = server_sock.accept()
-    print("Accepted connection from ", client_info, "\n")
-
-    phase = PHASE_GETTING_NAME_LENGTH
-
-    chunk_size = 0
-    chunk_data = None
-
-    filename_length = 0
-    filename = None
-    remaining_data_size = 0
-    file_size = 0
-    data = None
-
-    file_full_path = None
-    file_handle = None
-    write_success = False
-
+    # Keep trying to stablish connections forever
     while True:
+        print("Waiting for connection on RFCOMM channel %d..." % port)
+
+        client_sock, client_info = server_sock.accept()
+        print("Accepted connection from ", client_info, "\n")
+
+        # (Re)initialize the variables to start receiving data
+        phase = PHASE_GETTING_NAME_LENGTH
+
+        recv_buf = None
+
+        filename_length_size = 0
+        filename_length = 0
+        filename = None
+        data = None
+        data_size = 0
+
+        file_full_path = None
+        file_handle = None
+        write_success = False
+
+        # While in a connection, keep receiving data, which format is: (filename_size, filename, filedata).
+        while True:
+            try:
+                if phase == PHASE_GETTING_NAME_LENGTH:
+                    # Get data as a big-endian unsigned integer
+                    recv_buf = client_sock.recv(SIZE_OF_NAME_LENGTH)
+                    filename_length_size = len(recv_buf)
+                    
+                    filename_length = int.from_bytes(recv_buf, byteorder='big', signed=False)   #filename_length = int(recv_buf[0])     # This is only valid for 1 byte
+                    # if filename_length_size != SIZE_OF_NAME_LENGTH:
+                    #   print("Error: the transmission did not adhere to the secureworld protocol specification. Filename length must be contained in "+str(SIZE_OF_NAME_LENGTH)+" Bytes, but was contained in " + str(filename_length_size) + ".")
+                    #   break   # Error following the transfer protocol
+                    if filename_length > MAX_FILENAME_LENGTH_ALLOWED:
+                        print("Error: the transmission did not adhere to the secureworld protocol specification. Filename must not be greater than "+str(MAX_FILENAME_LENGTH_ALLOWED)+" Bytes, but was " + str(filename_length) + ".")
+                        break   # Error following the transfer protocol
+                    print("filename_length: ", filename_length)
+                    phase = PHASE_GETTING_NAME
+
+
+                elif phase == PHASE_GETTING_NAME:
+                    # Get data as a string (in UTF-8)
+                    recv_buf = client_sock.recv(filename_length)
+                    filename = recv_buf.decode("utf-8")
+                    if len(recv_buf) != filename_length:
+                        print("Error: the transmission did not adhere to the secureworld protocol specification. Filename length must be equal to the value contained in the filename_length field ("+str(filename_length)+" Bytes).")
+                        break   # Error following the transfer protocol
+
+                    # Compose the final path name
+                    file_full_path = compose_file_full_path(filename)
+                    print("file_full_path: ", file_full_path)
+
+                    # Check file existence
+                    if os.path.exists(file_full_path):
+                        print("The file '" + file_full_path + "' already exists. Overwriting it...")
+                    else:
+                        print("The file '" + file_full_path + "' does not exists. Creating it...")
+
+                    # Open the file for writing in binary mode. If file exists, its data is truncated and it is overwritten. If it does not exist, it is created.
+                    while not file_handle:
+                        try:
+                            file_handle = open(file_full_path,"wb")
+                        except IOError:
+                            print("Could not create the file '" + file_full_path + "'.")
+                        else:
+                            print("File '" + file_full_path + "' successfully created.")
+
+                    phase = PHASE_GETTING_DATA  #PHASE_GETTING_FILE_SIZE
+
+
+                elif phase == PHASE_GETTING_DATA:
+                    # Get data as a bytes (no conversion)
+                    recv_buf = client_sock.recv(MAX_CHUNK_DATA_SIZE)
+                    data = recv_buf
+                    data_size = len(data)
+                    print("data: %s" % data)
+                    print("data_size: %d" % data_size)
+
+                    # Close connection with the client when 0 bytes are received
+                    if data_size == 0:
+                        break
+
+                    # Keep trying to write the data until the write is successful
+                    write_success = False
+                    while not write_success:
+                        try:
+                            print("writing data to file")
+                            file_handle.write(data)
+                        except:
+                            print("Error trying to write data chunk to file. Retrying...")
+                            sleep(0.5)
+                        else:
+                            write_success = True
+
+            except IOError:
+                pass
+
+        print("Transmission finished")
+        server_thread.close_client_socket()
         try:
-            if phase == PHASE_GETTING_NAME_LENGTH:
-                # Get data as a big-endian unsigned integer
-                filename_length = int.from_bytes(client_sock.recv(SIZE_OF_NAME_LENGTH), byteorder='big', signed=False)  #client_sock.recv(SIZE_OF_NAME_LENGTH)
-                if filename_length != SIZE_OF_NAME_LENGTH:
-                    print("Error: the transmission did not adhere to the secureworld protocol specification. Filename length must be contained in "+str(SIZE_OF_NAME_LENGTH)+" Bytes.")
-                    break   # Error following the transfer protocol
-                if filename_length > MAX_FILENAME_LENGTH_ALLOWED:
-                    print("Error: the transmission did not adhere to the secureworld protocol specification. Filename must not be greater than "+str(MAX_FILENAME_LENGTH_ALLOWED)+" Bytes.")
-                    break   # Error following the transfer protocol
-                print("filename_length: ", filename_length)
-                phase = PHASE_GETTING_NAME
-
-
-            elif phase == PHASE_GETTING_NAME:
-                # Get data as a string (in UTF-8)
-                filename = client_sock.recv(filename_length).decode("utf-8")
-                if len(filename) != filename_length:
-                    print("Error: the transmission did not adhere to the secureworld protocol specification. Filename length must be equal to the value contained in the filename_length field ("+str(filename_length)+" Bytes).")
-                    break   # Error following the transfer protocol
-                print("filename: ", filename)
-                file_full_path = FOLDER_PATH+"/"+filename
-                phase = PHASE_GETTING_FILE_SIZE
-
-
-            elif phase == PHASE_GETTING_FILE_SIZE:
-                # Get data as a big-endian unsigned integer
-                file_size = int.from_bytes(client_sock.recv(SIZE_OF_FILE_SIZE), byteorder='big', signed=False)  #client_sock.recv(SIZE_OF_FILE_SIZE)
-                if file_size != SIZE_OF_FILE_SIZE:
-                    print("Error: the transmission did not adhere to the secureworld protocol specification. File size must be contained in "+str(SIZE_OF_FILE_SIZE)+" Bytes.")
-                    break   # Error following the transfer protocol
-                if file_size > MAX_FILE_SIZE_ALLOWED:   # This will never happen as the max file size is the maximum value storable in 4 bytes
-                    print("Error: the transmission did not adhere to the secureworld protocol specification. File size must not be greater than "+str(MAX_FILE_SIZE_ALLOWED)+" Bytes.")
-                    break   # Error following the transfer protocol
-                print("file_size: ", file_size)
-                remaining_data_size = file_size
-                phase = PHASE_GETTING_DATA
-
-                # Check file existence
-                if os.path.exists(file_full_path):
-                    print("The file " + file_full_path + " already exists. Overwriting it...")
-                else:
-                    print("The file " + file_full_path + " does not exists. Creating it...")
-
-                # Open the file for writing in binary mode. If file exists, its data is truncated and it is overwritten. If it does not exist, it is created.
-                while not file_handle:
-                    try:
-                        file_handle = open(file_full_path,"wb")
-                    except IOError:
-                        print("Could not create the file " + file_full_path + ".")
-                    else:
-                        print("File " + file_full_path + " successfully created.")
-
-
-            elif phase == PHASE_GETTING_DATA:
-                print("remaining_data_size: ", remaining_data_size)
-                chunk_size = min(remaining_data_size, MAX_CHUNK_SIZE)
-
-                # Get data as a bytes (no conversion)
-                chunk_data = client_sock.recv(chunk_size)
-                if len(chunk_data) != chunk_size:
-                    print("Error: the transmission did not adhere to the secureworld protocol specification. File size must be equal to the value contained in the file_size field ("+str(file_size)+" Bytes).")
-                    break   # Error following the transfer protocol
-                print("Received chunk_data[%s]" % chunk_data)
-
-                # Keep trying to write the data until the write is successful
-                write_success = False
-                while not write_success:
-                    try:
-                        file_handle.write(chunk_data)
-                    except:
-                        print("Error trying to write data chunk to file.")
-                        sleep(0.5)
-                    else:
-                        write_success = True
-                remaining_data_size -= chunk_size
-
-                if remaining_data_size == 0:
-                    phase = PHASE_DONE
-
-
-            elif phase == PHASE_DONE:
-                print("File correctly received. Ready to receive more files.")
-                phase = PHASE_GETTING_NAME_LENGTH
-
-                chunk_size = 0
-                chunk_data = None
-
-                filename_length = 0
-                filename = None
-                remaining_data_size = 0
-                file_size = 0
-                data = None
-
-                file_full_path = None
-                file_handle.close()
-                file_handle = None
-
-
-        except IOError:
+            file_handle.close()
+        except:
             pass
 
-    # This should never happen, even if client disconnects, server should still keep running
+
+
+    # This should never happen. Even if client disconnects, server should still keep running
     # This code will never be reached
     print("Conection dropped")
     server_thread.stop(False)
-
 
 
 
