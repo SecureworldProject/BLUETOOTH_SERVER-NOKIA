@@ -2,8 +2,6 @@ import time
 from bluetooth import *
 import threading
 import os
-#import multiprocessing
-#import select
 
 
 
@@ -194,7 +192,7 @@ def bluetooth_server_start():
                     if filename_length > MAX_FILENAME_LENGTH_ALLOWED:
                         print("Error: the transmission did not adhere to the secureworld protocol specification. Filename must not be greater than "+str(MAX_FILENAME_LENGTH_ALLOWED)+" Bytes, but was " + str(filename_length) + ".")
                         break   # Error following the transfer protocol
-                    print("filename_length: ", filename_length)
+                    #print("filename_length: ", filename_length)
                     phase = PHASE_GETTING_NAME
 
 
@@ -208,7 +206,7 @@ def bluetooth_server_start():
 
                     # Compose the final path name
                     file_full_path = compose_file_full_path(filename)
-                    print("file_full_path: ", file_full_path)
+                    #print("file_full_path: ", file_full_path)
 
                     # Check file existence
                     if os.path.exists(file_full_path):
@@ -233,8 +231,8 @@ def bluetooth_server_start():
                     recv_buf = client_sock.recv(MAX_CHUNK_DATA_SIZE)
                     data = recv_buf
                     data_size = len(data)
-                    print("data: %s" % data)
-                    print("data_size: %d" % data_size)
+                    #print("data: %s" % data)
+                    #print("data_size: %d" % data_size)
 
                     # Close connection with the client when 0 bytes are received
                     if data_size == 0:
@@ -244,7 +242,7 @@ def bluetooth_server_start():
                     write_success = False
                     while not write_success:
                         try:
-                            print("writing data to file")
+                            print("Writing data to file")
                             file_handle.write(data)
                         except:
                             print("Error trying to write data chunk to file. Retrying...")
@@ -266,7 +264,7 @@ def bluetooth_server_start():
 
     # This should never happen. Even if client disconnects, server should still keep running
     # This code will never be reached
-    print("Conection dropped")
+    print("Shutting down server...")
     server_thread.stop(False)
 
 
