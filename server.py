@@ -101,7 +101,7 @@ def main():
     server_thread = StoppableThread(target=bluetooth_server_start, args=args_tuple)
     server_thread.start()
 
-    print("Bluetooth server has been started")
+    print("Bluetooth server has been started\n")
 
     # While the server thread is running, main thread sleeps.
     while is_server_running:
