@@ -68,6 +68,7 @@ class StoppableThread(threading.Thread):
 
 def main():
     os.system("cls")
+    
     print()
     print("  ____  _            _              _   _        _____                          ")
     print(" |  _ \| |          | |            | | | |      / ____|                         ")
@@ -76,7 +77,7 @@ def main():
     print(" | |_) | | |_| |  __/ || (_) | (_) | |_| | | |  ____) |  __/ |   \ V /  __/ |   ")
     print(" |____/|_|\__,_|\___|\__\___/ \___/ \__|_| |_| |_____/ \___|_|    \_/ \___|_|   ")
     print()
-
+    
 
     # Use global vars (and allow modifications)
     global server_sock
@@ -101,7 +102,7 @@ def main():
     server_thread = StoppableThread(target=bluetooth_server_start, args=args_tuple)
     server_thread.start()
 
-    print("Bluetooth server has been started\n")
+    print(" Bluetooth server has been started\n")
 
     # While the server thread is running, main thread sleeps.
     while is_server_running:
@@ -127,6 +128,9 @@ def compose_file_full_path(recv_filename):
     if extension_dot_idx == -1:
         extension = ""
         filename = recv_filename
+    elif recv_filename == "ref_lifi.jpg" or recv_filename == "data_lifi.jpg":
+        extension = ""
+        filename = recv_filename      
     else:
         extension = recv_filename[extension_dot_idx:]
         filename = FIXED_FILENAME
@@ -157,10 +161,10 @@ def bluetooth_server_start():
 
     # Keep trying to stablish connections forever
     while True:
-        print("Waiting for connection on RFCOMM channel %d..." % port)
+        print(" Waiting for connection on RFCOMM channel %d..." % port)
 
         client_sock, client_info = server_sock.accept()
-        print("Accepted connection from ", client_info, "\n")
+        print(" Accepted connection from ", client_info, "\n")
 
         # (Re)initialize the variables to start receiving data
         phase = PHASE_GETTING_NAME_LENGTH
